@@ -54,6 +54,9 @@ public class AppCenterCore.FlatpakBackend : Backend, Object {
                 case Job.Type.REMOVE_PACKAGE:
                     remove_package_internal (job);
                     break;
+                case Job.Type.INSTALL_FLATPAKREF:
+                    install_flatpakref_internal (job);
+                    break;
                 default:
                     assert_not_reached ();
             }
@@ -842,6 +845,93 @@ public class AppCenterCore.FlatpakBackend : Backend, Object {
         }
 
         return updatable_ids;
+    }
+
+    private void install_flatpakref_internal (Job job) {
+        var args = (InstallFlatpakrefArgs)job.args;
+        var file = args.file;
+        var cancellable = args.cancellable;
+
+        if (installation == null) {
+            critical ("Error getting default flatpak installation");
+            job.result = false;
+            job.results_ready ();
+            return;
+        }
+
+        Flatpak.Transaction transaction;
+        try {
+            transaction = new Flatpak.Transaction.for_installation (installation, cancellable);
+        } catch (Error e) {
+            critical ("Error creating transaction for flatpak updates: %s", e.message);
+            job.error = e;
+            job.result = false;
+            job.results_ready ();
+            return;
+        }
+
+        Bytes flatpakref_bytes;
+        try {
+            flatpakref_bytes = file.load_bytes (cancellable, null);
+        } catch (Error e) {
+            critical ("Error reading flatpakref file: %s", e.message);
+            job.error = e;
+            job.result = false;
+            job.results_ready ();
+            return;
+        }
+
+        transaction.choose_remote_for_ref.connect ((@ref, runtime_ref, remotes) => {
+            if (remotes.length > 0) {
+                return 0;
+            } else {
+                return -1;
+            }
+        });
+
+        bool success = false;
+
+        transaction.operation_error.connect ((operation, e, detail) => {
+            warning ("Flatpak installation failed: %s", e.message);
+            if (e is GLib.IOError.CANCELLED) {
+                success = true;
+            } else {
+                return false;
+            }
+
+            return true;
+        });
+
+        transaction.operation_done.connect ((operation, commit, details) => {
+            success = true;
+        });
+
+        try {
+            transaction.run (cancellable);
+        } catch (Error e) {
+            if (e is GLib.IOError.CANCELLED) {
+                success = true;
+            } else {
+                success = false;
+            }
+        }
+
+        job.result = Value (typeof (bool));
+        job.result.set_boolean (success);
+        job.results_ready ();
+    }
+
+    public async bool install_flatpakref (File file, Cancellable cancellable) throws GLib.Error {
+        var job_args = new InstallFlatpakrefArgs ();
+        job_args.file = file;
+        job_args.cancellable = cancellable;
+
+        var job = yield launch_job (Job.Type.INSTALL_FLATPAKREF, job_args);
+        if (job.error != null) {
+            throw job.error;
+        }
+
+        return job.result.get_boolean ();
     }
 
     public Package? lookup_package_by_id (string id) {

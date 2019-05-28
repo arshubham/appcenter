@@ -109,6 +109,10 @@ public class AppCenter.App : Gtk.Application {
             return;
         }
 
+        if (file.get_path ().has_suffix (".flatpakref")) {
+            // TODO: Handle this with a warning dialog and then install it
+        }
+
         if (!file.has_uri_scheme ("appstream")) {
             return;
         }
